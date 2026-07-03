@@ -1,0 +1,415 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PSS-10 ストレスチェック</title>
+  <style>
+    body {
+      font-family: sans-serif;
+      margin: 0;
+      padding: 0;
+      background: #f1f5f9;
+      color: #0f172a;
+    }
+    .container {
+      max-width: 840px;
+      margin: 24px auto;
+      padding: 24px;
+      background: #ffffff;
+      border-radius: 14px;
+      box-shadow: 0 10px 30px rgba(15, 23, 42, 0.08);
+    }
+    h1, h2 {
+      margin-top: 0;
+    }
+    .description {
+      margin-bottom: 24px;
+      line-height: 1.75;
+    }
+    .question {
+      border-bottom: 1px solid #e2e8f0;
+      padding: 18px 0;
+    }
+    .question:last-child {
+      border-bottom: none;
+    }
+    .question-title {
+      margin: 0 0 10px;
+      font-weight: 600;
+    }
+    .answers {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(60px, 1fr));
+      gap: 10px;
+    }
+    label {
+      display: block;
+      background: #f8fafc;
+      border: 1px solid #cbd5e1;
+      border-radius: 10px;
+      padding: 10px;
+      text-align: center;
+      cursor: pointer;
+      transition: background 0.2s, border-color 0.2s, color 0.2s;
+      color: #0f172a;
+    }
+    input[type="radio"] {
+      display: none;
+    }
+    input[type="radio"]:checked + span {
+      display: block;
+      width: 100%;
+      padding: 10px 0;
+      background: #0284c7;
+      color: white;
+      border-radius: 10px;
+      box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.15);
+    }
+    input[type="radio"]:checked + span {
+    }
+    input[type="radio"]:checked + span {
+    }
+    input[type="radio"]:checked + span {
+    }
+    input[type="radio"]:checked + span {
+    }
+    input[type="radio"]:checked + span {
+    }
+    input[type="radio"]:checked + span {
+    }
+    input[type="radio"]:checked + span {
+    }
+    input[type="radio"]:checked + span {
+    }
+    input[type="radio"]:checked + span {
+    }
+    input[type="radio"]:checked + span {
+    }
+    input[type="radio"]:checked + span {
+    }
+    input[type="radio"]:checked + span {
+    }
+    input[type="radio"]:checked + span {
+    }
+    input[type="radio"]:checked + span {
+    }
+    input[type="radio"]:checked + span {
+    }
+    input[type="radio"]:checked + span {
+    }
+    label input[type="radio"]:checked + span {
+    }
+    input[type="radio"]:checked + span {
+    }
+    input[type="radio"]:checked + span {
+    }
+    label input[type="radio"]:checked + span {
+    }
+    input[type="radio"]:checked + span {
+    }
+    input[type="radio"]:checked + span {
+    }
+    input[type="radio"]:checked + span {
+    }
+    input[type="radio"]:checked + span {
+    }
+    input[type="radio"]:checked + span {
+    }
+    input[type="radio"]:checked + span {
+    }
+    input[type="radio"]:checked + span {
+    }
+    input[type="radio"]:checked + span {
+    }
+    input[type="radio"]:checked + span {
+    }
+    input[type="radio"]:checked + span {
+    }
+    label input[type="radio"]:checked ~ span {
+      background: #0284c7;
+      color: white;
+    }
+    label input[type="radio"]:checked ~ span {
+      display: block;
+      width: 100%;
+      padding: 10px 0;
+    }
+    label input[type="radio"]:checked ~ span {
+      border-radius: 10px;
+    }
+    label input[type="radio"]:checked ~ span {
+      background: #0284c7;
+      color: white;
+    }
+    label input[type="radio"]:checked ~ span {
+      box-shadow: inset 0 0 0 0 rgba(255,255,255,0);
+    }
+    label input[type="radio"]:checked ~ span {
+    }
+    label input[type="radio"]:checked ~ span {
+    }
+    label input[type="radio"]:checked ~ span {
+    }
+    label input[type="radio"]:checked ~ span {
+    }
+    label input[type="radio"]:checked ~ span {
+    }
+    label input[type="radio"]:checked ~ span {
+    }
+    label input[type="radio"]:checked ~ span {
+    }
+    label input[type="radio"]:checked ~ span {
+    }
+    label input[type="radio"]:checked ~ span {
+    }
+    label input[type="radio"]:checked ~ span {
+    }
+    label input[type="radio"]:checked ~ span {
+    }
+    label input[type="radio"]:checked ~ span {
+    }
+    label input[type="radio"]:checked ~ span {
+    }
+    label input[type="radio"]:checked ~ span {
+    }
+    label input[type="radio"]:checked ~ span {
+    }
+    label input[type="radio"]:checked ~ span {
+    }
+    label input[type="radio"]:checked ~ span {
+    }
+    label input[type="radio"]:checked ~ span {
+    }
+    label input[type="radio"]:checked ~ span {
+    }
+    label input[type="radio"]:checked ~ span {
+    }
+    label input[type="radio"]:checked ~ span {
+    }
+    label input[type="radio"]:checked ~ span {
+    }
+    label input[type="radio"]:checked ~ span {
+    }
+    label input[type="radio"]:checked ~ span {
+    }
+    label input[type="radio"]:checked ~ span {
+    }
+    label input[type="radio"]:checked ~ span {
+    }
+    input[type="radio"]:checked + span {
+      background: #0284c7;
+      color: white;
+    }
+    input[type="radio"]:checked + span {
+      display: block;
+      width: 100%;
+      padding: 10px 0;
+    }
+    input[type="radio"]:checked + span {
+      border-radius: 10px;
+    }
+    input[type="radio"]:checked + span {
+      box-shadow: inset 0 0 0 1px rgba(255,255,255,0.15);
+    }
+    .note {
+      font-size: 0.95rem;
+      color: #475569;
+      background: #e2e8f0;
+      padding: 12px;
+      border-radius: 10px;
+      margin-bottom: 20px;
+    }
+    button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border: none;
+      border-radius: 999px;
+      padding: 14px 22px;
+      font-size: 1rem;
+      background: #2563eb;
+      color: white;
+      cursor: pointer;
+      transition: transform 0.2s, box-shadow 0.2s;
+    }
+    button:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 10px 20px rgba(37, 99, 235, 0.18);
+    }
+    .result {
+      margin-top: 24px;
+      background: #eff6ff;
+      border: 1px solid #bfdbfe;
+      border-radius: 12px;
+      padding: 18px;
+    }
+    .result strong {
+      font-size: 1.2rem;
+    }
+    .legend {
+      margin-top: 22px;
+      font-size: 0.95rem;
+      color: #334155;
+      line-height: 1.7;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>PSS-10（知覚されたストレス尺度）</h1>
+    <p class="description">
+      以下の10項目について、<strong>この1ヶ月の間</strong>にあなたの状態として最も近いものを1つ選んでください。
+      すべて回答すると、ストレス点数が表示されます。
+    </p>
+    <form id="pssForm">
+      <div class="question">
+        <p class="question-title">1. 予期していなかった出来事が起きて、動揺した。</p>
+        <div class="answers">
+          <label><input type="radio" name="q1" value="0" /><span>0</span></label>
+          <label><input type="radio" name="q1" value="1" /><span>1</span></label>
+          <label><input type="radio" name="q1" value="2" /><span>2</span></label>
+          <label><input type="radio" name="q1" value="3" /><span>3</span></label>
+          <label><input type="radio" name="q1" value="4" /><span>4</span></label>
+        </div>
+      </div>
+      <div class="question">
+        <p class="question-title">2. 自分の人生の重要なことをコントロールできないと感じた。</p>
+        <div class="answers">
+          <label><input type="radio" name="q2" value="0" /><span>0</span></label>
+          <label><input type="radio" name="q2" value="1" /><span>1</span></label>
+          <label><input type="radio" name="q2" value="2" /><span>2</span></label>
+          <label><input type="radio" name="q2" value="3" /><span>3</span></label>
+          <label><input type="radio" name="q2" value="4" /><span>4</span></label>
+        </div>
+      </div>
+      <div class="question">
+        <p class="question-title">3. 神経質になったり、「ストレスが溜まっている」と感じたりした。</p>
+        <div class="answers">
+          <label><input type="radio" name="q3" value="0" /><span>0</span></label>
+          <label><input type="radio" name="q3" value="1" /><span>1</span></label>
+          <label><input type="radio" name="q3" value="2" /><span>2</span></label>
+          <label><input type="radio" name="q3" value="3" /><span>3</span></label>
+          <label><input type="radio" name="q3" value="4" /><span>4</span></label>
+        </div>
+      </div>
+      <div class="question">
+        <p class="question-title">4. 自分の身の回りの厄介ごと（面倒な問題）をうまく処理できていると自信を持てた。</p>
+        <div class="answers">
+          <label><input type="radio" name="q4" value="0" /><span>0</span></label>
+          <label><input type="radio" name="q4" value="1" /><span>1</span></label>
+          <label><input type="radio" name="q4" value="2" /><span>2</span></label>
+          <label><input type="radio" name="q4" value="3" /><span>3</span></label>
+          <label><input type="radio" name="q4" value="4" /><span>4</span></label>
+        </div>
+      </div>
+      <div class="question">
+        <p class="question-title">5. 物事が自分の思い通りに進んでいると感じた。</p>
+        <div class="answers">
+          <label><input type="radio" name="q5" value="0" /><span>0</span></label>
+          <label><input type="radio" name="q5" value="1" /><span>1</span></label>
+          <label><input type="radio" name="q5" value="2" /><span>2</span></label>
+          <label><input type="radio" name="q5" value="3" /><span>3</span></label>
+          <label><input type="radio" name="q5" value="4" /><span>4</span></label>
+        </div>
+      </div>
+      <div class="question">
+        <p class="question-title">6. やらなければならないすべてのことに対処しきれない（キャパオーバーだ）と感じた。</p>
+        <div class="answers">
+          <label><input type="radio" name="q6" value="0" /><span>0</span></label>
+          <label><input type="radio" name="q6" value="1" /><span>1</span></label>
+          <label><input type="radio" name="q6" value="2" /><span>2</span></label>
+          <label><input type="radio" name="q6" value="3" /><span>3</span></label>
+          <label><input type="radio" name="q6" value="4" /><span>4</span></label>
+        </div>
+      </div>
+      <div class="question">
+        <p class="question-title">7. 人生のイライラすること（腹が立つこと）をうまくコントロールできた。</p>
+        <div class="answers">
+          <label><input type="radio" name="q7" value="0" /><span>0</span></label>
+          <label><input type="radio" name="q7" value="1" /><span>1</span></label>
+          <label><input type="radio" name="q7" value="2" /><span>2</span></label>
+          <label><input type="radio" name="q7" value="3" /><span>3</span></label>
+          <label><input type="radio" name="q7" value="4" /><span>4</span></label>
+        </div>
+      </div>
+      <div class="question">
+        <p class="question-title">8. 自分が物事をうまくこなせている（優位に立てている）と感じた。</p>
+        <div class="answers">
+          <label><input type="radio" name="q8" value="0" /><span>0</span></label>
+          <label><input type="radio" name="q8" value="1" /><span>1</span></label>
+          <label><input type="radio" name="q8" value="2" /><span>2</span></label>
+          <label><input type="radio" name="q8" value="3" /><span>3</span></label>
+          <label><input type="radio" name="q8" value="4" /><span>4</span></label>
+        </div>
+      </div>
+      <div class="question">
+        <p class="question-title">9. 自分のコントロールの及ばない（どうしようもない）出来事のせいで、怒りを感じた。</p>
+        <div class="answers">
+          <label><input type="radio" name="q9" value="0" /><span>0</span></label>
+          <label><input type="radio" name="q9" value="1" /><span>1</span></label>
+          <label><input type="radio" name="q9" value="2" /><span>2</span></label>
+          <label><input type="radio" name="q9" value="3" /><span>3</span></label>
+          <label><input type="radio" name="q9" value="4" /><span>4</span></label>
+        </div>
+      </div>
+      <div class="question">
+        <p class="question-title">10. 困難が積み重なりすぎて、克服できない（乗り越えられない）と感じた。</p>
+        <div class="answers">
+          <label><input type="radio" name="q10" value="0" /><span>0</span></label>
+          <label><input type="radio" name="q10" value="1" /><span>1</span></label>
+          <label><input type="radio" name="q10" value="2" /><span>2</span></label>
+          <label><input type="radio" name="q10" value="3" /><span>3</span></label>
+          <label><input type="radio" name="q10" value="4" /><span>4</span></label>
+        </div>
+      </div>
+      <button type="button" onclick="calculateScore()">スコアを計算する</button>
+    </form>
+    <div id="result" class="result" style="display:none;"></div>
+    <div class="legend">
+      <p><strong>スコア範囲:</strong> 0〜40 点</p>
+      <p>高いスコアほど、現在「コントロール不能で過度な負荷（ストレス）」を感じている可能性が高いことを示します。</p>
+    </div>
+  </div>
+  <script>
+    const reverseQuestions = [4, 5, 7, 8];
+    const labels = [
+      '0〜13: 低ストレス',
+      '14〜26: 中程度のストレス',
+      '27〜40: 高ストレス'
+    ];
+
+    function calculateScore() {
+      const form = document.getElementById('pssForm');
+      let total = 0;
+      let missing = [];
+
+      for (let i = 1; i <= 10; i++) {
+        const el = form.querySelector(`input[name='q${i}']:checked`);
+        if (!el) {
+          missing.push(i);
+          continue;
+        }
+        let value = Number(el.value);
+        if (reverseQuestions.includes(i)) {
+          value = 4 - value;
+        }
+        total += value;
+      }
+
+      const resultEl = document.getElementById('result');
+      if (missing.length) {
+        resultEl.style.display = 'block';
+        resultEl.innerHTML = `<strong>未回答の質問があります:</strong> ${missing.join(', ')}<br>すべての質問に回答してから再度スコアを計算してください。`;
+        return;
+      }
+
+      resultEl.style.display = 'block';
+      resultEl.innerHTML = `
+        <p><strong>あなたのPSS-10スコア:</strong> ${total} 点</p>
+        <p>すべて回答した結果のストレス点数です。</p>
+      `;
+    }
+  </script>
+</body>
+</html>
