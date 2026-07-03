@@ -1,76 +1,205 @@
 """
-カメラ映像からリアルタイムで表情（感情）を認識し、ストレス度を評価するスクリプト
+カメラ映像からリアルタイムで表情（感情）を認識し、ストレス度を評価するスクリプト（高精度版）
+
+■ 旧版からの主な変更点
+  - 顔検出/ランドマーク: OpenCV Haar → MediaPipe FaceLandmarker（Tasks API, 478点＋blendshapes）
+  - 感情認識: DeepFace(FER2013系) → HSEmotion(EfficientNet系, 8クラス) に置換して精度向上
+  - ストレス評価: 感情の線形加重 → 「起動時の平常状態からの逸脱(zスコア)」で再設計
+      * 感情のネガティブ度に加え、blendshapesから得た
+        「眉間のしわ(browDown)」「まばたき率」を微細特徴として合成
+      * 個人ごとに較正するので、恣意的な固定係数に依存しない
+  - 感情確率を時間平滑化(EMA)＋低信頼度ゲートで表示のブレを抑制
 
 必要ライブラリ:
-    pip install opencv-python deepface tf-keras matplotlib
+    pip install opencv-python mediapipe hsemotion-onnx onnxruntime tf-keras matplotlib
 
 使い方:
-    python emotion_recognition.py
-    ウィンドウ上で 'q' キーを押すと終了します（Ctrl+Cでも終了可）。
-    終了時に、セッション中のストレス度の推移を stress_log.csv と
-    stress_graph.png としてスクリプトと同じフォルダに保存します。
+    python face-detect2.py
+    起動直後に数秒間の「較正」フェーズがあります。画面の指示どおり
+    平常（リラックスした無表情）の状態を保ってください。
+    その後リアルタイム評価に移ります。'q' キー（またはCtrl+C）で終了します。
+    終了時に stress_log.csv と stress_graph.png を保存します。
 """
 
 import csv
 import os
 import time
+import urllib.request
+from collections import deque
 
 import cv2
-from deepface import DeepFace
+import numpy as np
+
+import mediapipe as mp
+from mediapipe.tasks import python as mp_python
+from mediapipe.tasks.python import vision
+from hsemotion_onnx.facial_emotions import HSEmotionRecognizer
 
 import matplotlib
 matplotlib.use("Agg")  # imshowウィンドウと競合しない保存専用バックエンド
 import matplotlib.pyplot as plt
 
-# DeepFace が返す感情ラベル → 日本語表示
+
+# ============================================================================
+# 設定
+# ============================================================================
+
+# HSEmotion が返す感情ラベル（8クラス） → 日本語表示（描画はフォント都合で英語）
 EMOTION_JP = {
-    "angry":    "怒り",
-    "disgust":  "嫌悪",
-    "fear":     "恐怖",
-    "happy":    "喜び",
-    "sad":      "悲しみ",
-    "surprise": "驚き",
-    "neutral":  "無表情",
+    "Anger":     "怒り",
+    "Contempt":  "軽蔑",
+    "Disgust":   "嫌悪",
+    "Fear":      "恐怖",
+    "Happiness": "喜び",
+    "Neutral":   "無表情",
+    "Sadness":   "悲しみ",
+    "Surprise":  "驚き",
 }
 
-# 何フレームごとに解析するか（毎フレーム解析は重いので間引く）
-ANALYZE_EVERY = 5
+# ストレス方向に働くネガティブ感情（この確率和が高いほどストレス寄り）
+NEGATIVE_EMOTIONS = ["Anger", "Contempt", "Disgust", "Fear", "Sadness"]
 
-# ストレス寄与の重み（プラスほどストレス増、マイナスほど緩和方向）
-# angry/fear/disgust/sad はストレス増、surpriseは軽度に増、
-# happy/neutralは緩和（マイナス寄与）として扱う。
-STRESS_WEIGHTS = {
-    "angry":    1.0,
-    "disgust":  0.8,
-    "fear":     1.0,
-    "sad":      0.7,
-    "surprise": 0.3,
-    "happy":    -1.0,
-    "neutral":  -0.2,
-}
+# 何フレームごとに感情解析(HSEmotion)を実行するか。
+# 顔ランドマーク(FaceLandmarker)は毎フレーム実行する（まばたき検出に必要かつ軽量）。
+ANALYZE_EVERY = 3
 
-# 表示中のスコア変動を滑らかにするための指数移動平均係数（0-1、大きいほど反応が速い）
+# 使用する感情モデル（enet_b2_8 = 8クラス, 入力260px, b0より高精度）
+HSEMOTION_MODEL = "enet_b2_8"
+
+# 感情確率ベクトルの時間平滑化係数（0-1, 大きいほど反応が速い）
+EMO_EMA_ALPHA = 0.4
+# 最終ストレススコアの表示平滑化係数
 STRESS_EMA_ALPHA = 0.3
+
+# --- ストレススコア合成の設定 ---
+# 各成分（感情/眉間/まばたき）をベースラインからのzスコアにし、重み付き和を取る
+STRESS_COMPONENT_WEIGHTS = {
+    "emotion": 0.55,  # ネガティブ感情の増加
+    "brow":    0.30,  # 眉間のしわ（browDown）の増加
+    "blink":   0.15,  # まばたき率の増加
+}
+# z=0（＝平常時）を何点にするか、および z 1あたり何点上げるか
+STRESS_BASE_LEVEL = 25.0
+STRESS_Z_GAIN = 15.0
+
+# zスコアの分母（標準偏差）の下限。平常状態が静かすぎるとノイズで暴れるのを防ぐ
+EMO_STD_FLOOR = 0.05
+BROW_STD_FLOOR = 0.02
+BLINK_STD_FLOOR = 3.0  # 回/分
+
+# 較正（ベースライン測定）フェーズの長さ（秒）
+CALIB_SECONDS = 7.0
+
+# まばたき検出（blendshape eyeBlink のしきい値・ヒステリシス）と集計窓
+BLINK_ON_THRESHOLD = 0.5
+BLINK_OFF_THRESHOLD = 0.35
+BLINK_WINDOW_SEC = 30.0  # まばたき率を計算する直近の窓（秒）
+
+# 顔クロップの余白（ランドマーク外接矩形に対する比率）
+FACE_CROP_MARGIN = 0.15
 
 # ストレスバーの色分けしきい値（0-100）
 STRESS_LOW_THRESHOLD = 33   # これ未満は緑（低ストレス）
 STRESS_HIGH_THRESHOLD = 66  # これ以上は赤（高ストレス）、間は黄
 
-# 出力ファイル（スクリプトと同じフォルダに保存）
+# 出力ファイル/モデルファイル（スクリプトと同じフォルダ）
 OUTPUT_DIR = os.path.dirname(os.path.abspath(__file__))
 STRESS_CSV_PATH = os.path.join(OUTPUT_DIR, "stress_log.csv")
 STRESS_GRAPH_PATH = os.path.join(OUTPUT_DIR, "stress_graph.png")
+FACE_LANDMARKER_TASK = os.path.join(OUTPUT_DIR, "face_landmarker.task")
+FACE_LANDMARKER_URL = (
+    "https://storage.googleapis.com/mediapipe-models/face_landmarker/"
+    "face_landmarker/float16/1/face_landmarker.task"
+)
 
 
-def calc_stress_score(emotion_dict):
-    """DeepFaceのemotion確率辞書（0-100、合計約100）からストレススコア(0-100)を算出する"""
-    raw = sum(
-        weight * emotion_dict.get(label, 0.0)
-        for label, weight in STRESS_WEIGHTS.items()
+# ============================================================================
+# モデル準備
+# ============================================================================
+
+def ensure_face_landmarker_model():
+    """FaceLandmarker のモデルバンドル(.task)が無ければダウンロードする"""
+    if not os.path.exists(FACE_LANDMARKER_TASK):
+        print("FaceLandmarker モデルをダウンロードしています...")
+        urllib.request.urlretrieve(FACE_LANDMARKER_URL, FACE_LANDMARKER_TASK)
+        print("ダウンロード完了。")
+
+
+def create_face_landmarker():
+    """blendshapes 出力付きの FaceLandmarker(VIDEOモード) を生成する"""
+    options = vision.FaceLandmarkerOptions(
+        base_options=mp_python.BaseOptions(model_asset_path=FACE_LANDMARKER_TASK),
+        running_mode=vision.RunningMode.VIDEO,
+        num_faces=1,
+        output_face_blendshapes=True,
+        min_face_detection_confidence=0.5,
+        min_face_presence_confidence=0.5,
+        min_tracking_confidence=0.5,
     )
-    # rawの理論的なレンジはおよそ-100〜+100（全部happyなら-100付近、全部angryなら+100付近）
-    # 0-100に正規化してクリップする
-    score = (raw + 100.0) / 2.0
+    return vision.FaceLandmarker.create_from_options(options)
+
+
+# ============================================================================
+# 特徴抽出
+# ============================================================================
+
+def landmarks_to_bbox(landmarks, frame_w, frame_h, margin=FACE_CROP_MARGIN):
+    """正規化ランドマーク列 → 画素座標の外接矩形 (x, y, w, h)。余白付き＆画面内にクリップ。"""
+    xs = [lm.x for lm in landmarks]
+    ys = [lm.y for lm in landmarks]
+    x1, x2 = min(xs) * frame_w, max(xs) * frame_w
+    y1, y2 = min(ys) * frame_h, max(ys) * frame_h
+    mw = (x2 - x1) * margin
+    mh = (y2 - y1) * margin
+    x1 = int(max(0, x1 - mw))
+    y1 = int(max(0, y1 - mh))
+    x2 = int(min(frame_w, x2 + mw))
+    y2 = int(min(frame_h, y2 + mh))
+    return x1, y1, x2 - x1, y2 - y1
+
+
+def blendshapes_to_dict(blendshape_categories):
+    """blendshape の Category リスト → {名前: スコア} の辞書"""
+    return {c.category_name: c.score for c in blendshape_categories}
+
+
+def brow_down_value(bs):
+    """眉間のしわ（corrugator近似）。browDownLeft/Right の平均。高いほど眉を寄せている。"""
+    return (bs.get("browDownLeft", 0.0) + bs.get("browDownRight", 0.0)) / 2.0
+
+
+def blink_signal(bs):
+    """まばたき信号。左右 eyeBlink の大きい方（片目つむりにも反応）。"""
+    return max(bs.get("eyeBlinkLeft", 0.0), bs.get("eyeBlinkRight", 0.0))
+
+
+def emotion_negative_affect(prob_dict):
+    """感情確率(合計約1)からネガティブ度スカラーを算出。範囲はおおよそ -1〜+1。"""
+    neg = sum(prob_dict.get(e, 0.0) for e in NEGATIVE_EMOTIONS)
+    return neg - prob_dict.get("Happiness", 0.0)
+
+
+# ============================================================================
+# ストレススコア
+# ============================================================================
+
+def zscore(value, mean, std, std_floor):
+    return (value - mean) / max(std, std_floor)
+
+
+def compose_stress(emo_neg, brow, blink_rate, baseline):
+    """各成分をベースラインからのzスコアにし、重み付き和 → 0-100 に写像する。"""
+    z_emo = zscore(emo_neg, baseline["emo_mean"], baseline["emo_std"], EMO_STD_FLOOR)
+    z_brow = zscore(brow, baseline["brow_mean"], baseline["brow_std"], BROW_STD_FLOOR)
+    z_blink = zscore(
+        blink_rate, baseline["blink_mean"], baseline["blink_std"], BLINK_STD_FLOOR
+    )
+    z_total = (
+        STRESS_COMPONENT_WEIGHTS["emotion"] * z_emo
+        + STRESS_COMPONENT_WEIGHTS["brow"] * z_brow
+        + STRESS_COMPONENT_WEIGHTS["blink"] * z_blink
+    )
+    score = STRESS_BASE_LEVEL + STRESS_Z_GAIN * z_total
     return max(0.0, min(100.0, score))
 
 
@@ -84,6 +213,41 @@ def stress_color(score):
         return (0, 0, 255)      # 赤
 
 
+# ============================================================================
+# まばたきカウンタ
+# ============================================================================
+
+class BlinkCounter:
+    """eyeBlink 信号のヒステリシス立ち上がりで瞬目を数え、直近窓の瞬目率(回/分)を返す。"""
+
+    def __init__(self):
+        self.is_closed = False
+        self.timestamps = deque()  # まばたき発生時刻(秒)
+
+    def update(self, signal, now):
+        if not self.is_closed and signal >= BLINK_ON_THRESHOLD:
+            self.is_closed = True
+            self.timestamps.append(now)  # 目を閉じた瞬間を1回とカウント
+        elif self.is_closed and signal <= BLINK_OFF_THRESHOLD:
+            self.is_closed = False
+        # 窓外の古い記録を捨てる
+        while self.timestamps and now - self.timestamps[0] > BLINK_WINDOW_SEC:
+            self.timestamps.popleft()
+
+    def rate_per_min(self, now, start_time):
+        """直近窓の瞬目率(回/分)。経過が窓長に満たない間は経過時間で正規化する。"""
+        elapsed = now - start_time
+        window = min(BLINK_WINDOW_SEC, elapsed)
+        if window < 1.0:
+            return 0.0
+        count = sum(1 for t in self.timestamps if now - t <= window)
+        return count * 60.0 / window
+
+
+# ============================================================================
+# レポート保存
+# ============================================================================
+
 def save_stress_report(stress_history):
     """セッション終了時にストレススコアの時系列をCSVとグラフ画像に保存する"""
     if not stress_history:
@@ -92,9 +256,30 @@ def save_stress_report(stress_history):
 
     with open(STRESS_CSV_PATH, "w", newline="", encoding="utf-8-sig") as f:
         writer = csv.writer(f)
-        writer.writerow(["elapsed_sec", "frame_count", "stress_score"])
-        for elapsed, frame_count, score in stress_history:
-            writer.writerow([f"{elapsed:.2f}", frame_count, f"{score:.1f}"])
+        writer.writerow(
+            [
+                "elapsed_sec",
+                "frame_count",
+                "stress_score",
+                "dominant_emotion",
+                "emo_negative",
+                "brow_down",
+                "blink_rate_per_min",
+            ]
+        )
+        for row in stress_history:
+            elapsed, fc, score, emo, emo_neg, brow, blink = row
+            writer.writerow(
+                [
+                    f"{elapsed:.2f}",
+                    fc,
+                    f"{score:.1f}",
+                    emo,
+                    f"{emo_neg:.3f}",
+                    f"{brow:.3f}",
+                    f"{blink:.1f}",
+                ]
+            )
     print(f"ストレスログを保存しました: {STRESS_CSV_PATH}")
 
     times = [row[0] for row in stress_history]
@@ -113,20 +298,44 @@ def save_stress_report(stress_history):
     print(f"ストレスグラフを保存しました: {STRESS_GRAPH_PATH}")
 
 
+# ============================================================================
+# メイン
+# ============================================================================
+
 def main():
+    ensure_face_landmarker_model()
+
+    print("感情モデルを読み込んでいます（初回はダウンロードが走ります）...")
+    fer = HSEmotionRecognizer(model_name=HSEMOTION_MODEL)
+    landmarker = create_face_landmarker()
+
     cap = cv2.VideoCapture(0)  # 0 = 既定のカメラ
     if not cap.isOpened():
         print("カメラを開けませんでした。デバイス番号や接続を確認してください。")
+        landmarker.close()
         return
 
     frame_count = 0
-    last_results = []  # 直近の解析結果（顔ごとの位置と感情）を保持
-
-    stress_history = []  # (経過秒, フレーム番号, スコア) のタプルのリスト
     session_start = time.time()
-    smoothed_stress = None  # 主要顔のセッション全体ストレス（EMA平滑化後）
+    last_ts_ms = -1
 
-    print("起動しました。ウィンドウ上で 'q' を押すと終了します。")
+    # 直近の解析状態（描画とストレス計算で共有）
+    smoothed_probs = None          # 平滑化した感情確率辞書
+    last_bbox = None               # 直近の顔矩形
+    last_emo_neg = 0.0
+    last_brow = 0.0
+
+    blink_counter = BlinkCounter()
+
+    # 較正フェーズ用のサンプル蓄積
+    calibrating = True
+    calib_emo = []
+    calib_brow = []
+    baseline = None
+    smoothed_stress = None
+    stress_history = []
+
+    print("起動しました。まず数秒間、平常な表情を保ってください（較正中）。")
 
     try:
         while True:
@@ -136,35 +345,90 @@ def main():
                 break
 
             frame_count += 1
+            now = time.time()
+            elapsed = now - session_start
 
-            # 一定フレームごとにのみ感情解析を実行
-            if frame_count % ANALYZE_EVERY == 0:
-                try:
-                    # enforce_detection=False で顔未検出時も落ちないようにする
-                    analysis = DeepFace.analyze(
-                        frame,
-                        actions=["emotion"],
-                        enforce_detection=False,
-                        detector_backend="opencv",
-                    )
-                    # 複数顔にも対応（analyze は dict または list を返す）
-                    if isinstance(analysis, dict):
-                        analysis = [analysis]
-                    last_results = analysis
-                except Exception as e:
-                    print(f"解析エラー: {e}")
-                    last_results = []
+            # --- FaceLandmarker は毎フレーム実行（VIDEOモードは単調増加のtimestampが必要） ---
+            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
+            ts_ms = int(elapsed * 1000)
+            if ts_ms <= last_ts_ms:
+                ts_ms = last_ts_ms + 1
+            last_ts_ms = ts_ms
+            result = landmarker.detect_for_video(mp_image, ts_ms)
 
-                # 複数顔の中から最大の顔を「主要顔」とし、セッション全体の
-                # ストレス推移（EMA・CSV・グラフ）に使う。顔が無い回は
-                # 直前の値を保持し、記録もスキップする（ジッター防止）。
-                if last_results:
-                    primary_face = max(
-                        last_results,
-                        key=lambda f: f.get("region", {}).get("w", 0)
-                        * f.get("region", {}).get("h", 0),
+            face_present = bool(result.face_landmarks)
+            frame_h, frame_w = frame.shape[:2]
+
+            if face_present:
+                landmarks = result.face_landmarks[0]
+                last_bbox = landmarks_to_bbox(landmarks, frame_w, frame_h)
+
+                # 微細特徴（blendshapes）: 毎フレーム更新
+                if result.face_blendshapes:
+                    bs = blendshapes_to_dict(result.face_blendshapes[0])
+                    last_brow = brow_down_value(bs)
+                    blink_counter.update(blink_signal(bs), now)
+
+                # 感情解析（HSEmotion）: 間引いて実行
+                if frame_count % ANALYZE_EVERY == 0:
+                    x, y, w, h = last_bbox
+                    if w > 0 and h > 0:
+                        face_bgr = frame[y : y + h, x : x + w]
+                        face_rgb = cv2.cvtColor(face_bgr, cv2.COLOR_BGR2RGB)
+                        try:
+                            _, scores = fer.predict_emotions(face_rgb, logits=False)
+                            probs = {
+                                fer.idx_to_class[i]: float(scores[i])
+                                for i in range(len(scores))
+                            }
+                            # 感情確率ベクトルを EMA 平滑化
+                            if smoothed_probs is None:
+                                smoothed_probs = probs
+                            else:
+                                smoothed_probs = {
+                                    k: EMO_EMA_ALPHA * probs[k]
+                                    + (1 - EMO_EMA_ALPHA) * smoothed_probs.get(k, 0.0)
+                                    for k in probs
+                                }
+                            last_emo_neg = emotion_negative_affect(smoothed_probs)
+                        except Exception as e:
+                            print(f"感情解析エラー: {e}")
+
+            blink_rate = blink_counter.rate_per_min(now, session_start)
+
+            # ================= 較正フェーズ =================
+            if calibrating:
+                if face_present:
+                    calib_brow.append(last_brow)
+                    if smoothed_probs is not None:
+                        calib_emo.append(last_emo_neg)
+
+                if elapsed >= CALIB_SECONDS:
+                    # ベースライン統計を確定
+                    emo_arr = np.array(calib_emo) if calib_emo else np.array([0.0])
+                    brow_arr = np.array(calib_brow) if calib_brow else np.array([0.0])
+                    baseline = {
+                        "emo_mean": float(emo_arr.mean()),
+                        "emo_std": float(emo_arr.std()),
+                        "brow_mean": float(brow_arr.mean()),
+                        "brow_std": float(brow_arr.std()),
+                        "blink_mean": blink_rate,          # 較正中の平常瞬目率
+                        "blink_std": BLINK_STD_FLOOR,      # 瞬目率は分散推定が不安定なので下限を使う
+                    }
+                    calibrating = False
+                    print(
+                        "較正完了。ベースライン: "
+                        f"emo={baseline['emo_mean']:.2f}, "
+                        f"brow={baseline['brow_mean']:.2f}, "
+                        f"blink={baseline['blink_mean']:.1f}/min"
                     )
-                    raw_score = calc_stress_score(primary_face.get("emotion", {}))
+            # ================= 評価フェーズ =================
+            else:
+                if face_present:
+                    raw_score = compose_stress(
+                        last_emo_neg, last_brow, blink_rate, baseline
+                    )
                     if smoothed_stress is None:
                         smoothed_stress = raw_score
                     else:
@@ -172,68 +436,81 @@ def main():
                             STRESS_EMA_ALPHA * raw_score
                             + (1 - STRESS_EMA_ALPHA) * smoothed_stress
                         )
-                    elapsed = time.time() - session_start
-                    stress_history.append((elapsed, frame_count, smoothed_stress))
+                    dominant = (
+                        max(smoothed_probs, key=smoothed_probs.get)
+                        if smoothed_probs
+                        else ""
+                    )
+                    stress_history.append(
+                        (
+                            elapsed,
+                            frame_count,
+                            smoothed_stress,
+                            dominant,
+                            last_emo_neg,
+                            last_brow,
+                            blink_rate,
+                        )
+                    )
 
-            # 解析結果を描画
-            for face in last_results:
-                region = face.get("region", {})
-                x = region.get("x", 0)
-                y = region.get("y", 0)
-                w = region.get("w", 0)
-                h = region.get("h", 0)
-
-                emotion_en = face.get("dominant_emotion", "")
-                confidence = face.get("emotion", {}).get(emotion_en, 0.0)
-                face_stress = calc_stress_score(face.get("emotion", {}))
-
-                # 顔の枠
+            # ================= 描画 =================
+            if face_present and last_bbox is not None:
+                x, y, w, h = last_bbox
                 cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
-                # ラベル背景
-                cv2.rectangle(frame, (x, y - 25), (x + max(w, 180), y), (0, 255, 0), -1)
-                # ラベル文字（日本語はフォント非対応のため英語表記で描画）
+                if smoothed_probs:
+                    dom = max(smoothed_probs, key=smoothed_probs.get)
+                    conf = smoothed_probs[dom] * 100.0
+                    label = f"{dom} {conf:.0f}%"
+                else:
+                    label = "..."
+                cv2.rectangle(frame, (x, y - 25), (x + max(w, 200), y), (0, 255, 0), -1)
+                cv2.putText(
+                    frame, label, (x + 3, y - 7),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 0), 2,
+                )
+
+            # 較正の進捗 or ストレスゲージ
+            if calibrating:
+                remaining = max(0.0, CALIB_SECONDS - elapsed)
                 cv2.putText(
                     frame,
-                    f"{emotion_en} {confidence:.0f}% | Stress {face_stress:.0f}",
-                    (x + 3, y - 7),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.55,
-                    (0, 0, 0),
-                    2,
+                    f"CALIBRATING... keep a neutral face ({remaining:.0f}s)",
+                    (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2,
+                )
+            else:
+                gauge_x, gauge_y, gauge_w, gauge_h = 20, 20, 200, 20
+                display_score = smoothed_stress if smoothed_stress is not None else 0.0
+                color = stress_color(display_score)
+                cv2.rectangle(
+                    frame, (gauge_x, gauge_y),
+                    (gauge_x + gauge_w, gauge_y + gauge_h), (200, 200, 200), 2,
+                )
+                fill_w = int(gauge_w * display_score / 100)
+                if fill_w > 0:
+                    cv2.rectangle(
+                        frame, (gauge_x, gauge_y),
+                        (gauge_x + fill_w, gauge_y + gauge_h), color, -1,
+                    )
+                cv2.putText(
+                    frame, f"Stress: {display_score:.0f}",
+                    (gauge_x, gauge_y + gauge_h + 20),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2,
+                )
+                # 参考値（小さく表示）
+                cv2.putText(
+                    frame,
+                    f"brow:{last_brow:.2f} blink:{blink_rate:.0f}/min",
+                    (gauge_x, gauge_y + gauge_h + 42),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, (200, 200, 200), 1,
                 )
 
-            # セッション全体のストレスゲージ（画面左上に固定表示）
-            gauge_x, gauge_y, gauge_w, gauge_h = 20, 20, 200, 20
-            display_score = smoothed_stress if smoothed_stress is not None else 0.0
-            gauge_fill_color = stress_color(display_score)
-            cv2.rectangle(
-                frame,
-                (gauge_x, gauge_y),
-                (gauge_x + gauge_w, gauge_y + gauge_h),
-                (200, 200, 200),
-                2,
-            )
-            fill_width = int(gauge_w * display_score / 100)
-            if fill_width > 0:
-                cv2.rectangle(
-                    frame,
-                    (gauge_x, gauge_y),
-                    (gauge_x + fill_width, gauge_y + gauge_h),
-                    gauge_fill_color,
-                    -1,
+            if not face_present:
+                cv2.putText(
+                    frame, "No face detected", (20, frame_h - 20),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2,
                 )
-            cv2.putText(
-                frame,
-                f"Stress: {display_score:.0f}",
-                (gauge_x, gauge_y + gauge_h + 20),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.6,
-                gauge_fill_color,
-                2,
-            )
 
             cv2.imshow("Stress Evaluation (press q to quit)", frame)
-
             if cv2.waitKey(1) & 0xFF == ord("q"):
                 break
     except KeyboardInterrupt:
@@ -241,6 +518,7 @@ def main():
     finally:
         cap.release()
         cv2.destroyAllWindows()
+        landmarker.close()  # mediapipe の終了時例外を避けるため明示的に閉じる
         save_stress_report(stress_history)
 
 
