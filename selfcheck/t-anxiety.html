@@ -1,0 +1,452 @@
+﻿<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>STAI-T（特性不安）</title>
+<style>
+  :root {
+    --bg: #F7F8FA;
+    --surface: #FFFFFF;
+    --border: #DDE1E9;
+    --primary-a: #2563B0;
+    --primary-b: #16A38A;
+    --text: #1A1D23;
+    --subtext: #5A6072;
+    --label: #3A4055;
+    --selected-a: #EAF1FB;
+    --selected-b: #E6F7F4;
+    --score-a: #2563B0;
+    --score-b: #16A38A;
+    --radius: 10px;
+    --font: 'Noto Sans JP', 'Yu Gothic', 'Meiryo', sans-serif;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    font-family: var(--font);
+    color: var(--text);
+    min-height: 100vh;
+    padding: 32px 16px 64px;
+  }
+
+  h1 {
+    text-align: center;
+    font-size: 1.5rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    margin-bottom: 8px;
+    color: var(--text);
+  }
+
+  .subtitle {
+    text-align: center;
+    color: var(--subtext);
+    font-size: 0.85rem;
+    margin-bottom: 40px;
+  }
+
+  .card {
+    background: var(--surface);
+    border-radius: var(--radius);
+    border: 1px solid var(--border);
+    padding: 28px 32px;
+    max-width: 720px;
+    margin: 0 auto 24px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.04);
+  }
+
+  .card-header {
+    margin-bottom: 20px;
+    padding-bottom: 16px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .card-header h2 {
+    font-size: 1.15rem;
+    font-weight: 700;
+    margin-bottom: 6px;
+  }
+
+  .card-header p {
+    font-size: 0.82rem;
+    color: var(--subtext);
+    line-height: 1.6;
+  }
+
+  .scale-header {
+    display: grid;
+    grid-template-columns: 1fr repeat(4, 52px);
+    align-items: end;
+    gap: 4px;
+    padding: 0 0 8px 0;
+    margin-bottom: 4px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .scale-header .scale-labels {
+    display: contents;
+  }
+
+  .scale-header .sh-item {
+    text-align: center;
+    font-size: 0.7rem;
+    color: var(--subtext);
+    line-height: 1.3;
+    font-weight: 600;
+  }
+
+  .scale-header .sh-empty { grid-column: 1; }
+
+  .q-row {
+    display: grid;
+    grid-template-columns: 1fr repeat(4, 52px);
+    align-items: center;
+    gap: 4px;
+    padding: 10px 0;
+    border-bottom: 1px solid #F0F2F5;
+    transition: background 0.15s;
+    border-radius: 6px;
+  }
+
+  .q-row:last-child { border-bottom: none; }
+
+  .q-row:hover { background: #F7F9FC; }
+
+  .q-text {
+    font-size: 0.9rem;
+    color: var(--label);
+    line-height: 1.5;
+    padding-right: 8px;
+  }
+
+  .q-num {
+    font-size: 0.75rem;
+    color: var(--subtext);
+    font-weight: 700;
+    display: inline-block;
+    margin-right: 4px;
+  }
+
+  .radio-cell {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+  }
+
+  input[type="radio"] { display: none; }
+
+  .radio-label {
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    border: 2px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.8rem;
+    font-weight: 700;
+    cursor: pointer;
+    transition: all 0.15s;
+    color: var(--subtext);
+    user-select: none;
+  }
+
+  .radio-label:hover {
+    border-color: #999;
+    background: #F0F2F5;
+  }
+
+  #panel-b input[type="radio"]:checked + .radio-label {
+    background: var(--primary-b);
+    border-color: var(--primary-b);
+    color: #fff;
+    box-shadow: 0 2px 8px rgba(22,163,138,0.3);
+  }
+
+  .score-area {
+    max-width: 720px;
+    margin: 0 auto 16px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 24px 32px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.04);
+  }
+
+  .score-area h3 {
+    font-size: 0.85rem;
+    color: var(--subtext);
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    margin-bottom: 12px;
+  }
+
+  .score-display {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    margin-bottom: 12px;
+  }
+
+  .score-num {
+    font-size: 2.4rem;
+    font-weight: 800;
+    line-height: 1;
+  }
+
+  .score-num.color-b { color: var(--score-b); }
+
+  .score-max {
+    font-size: 1rem;
+    color: var(--subtext);
+  }
+
+  .score-answered {
+    font-size: 0.82rem;
+    color: var(--subtext);
+    margin-bottom: 12px;
+  }
+
+  .progress-track {
+    width: 100%;
+    height: 8px;
+    background: #EEF0F4;
+    border-radius: 999px;
+    overflow: hidden;
+  }
+
+  .progress-fill {
+    height: 100%;
+    border-radius: 999px;
+    transition: width 0.3s ease;
+  }
+
+  .progress-fill.color-b { background: var(--primary-b); }
+
+  .submit-btn {
+    display: block;
+    width: 100%;
+    max-width: 720px;
+    margin: 0 auto 12px;
+    padding: 14px;
+    border-radius: var(--radius);
+    border: none;
+    font-size: 1rem;
+    font-weight: 700;
+    cursor: pointer;
+    transition: opacity 0.2s, transform 0.1s;
+    letter-spacing: 0.03em;
+  }
+
+  .submit-btn:active { transform: scale(0.98); }
+
+  .submit-btn.color-b {
+    background: var(--primary-b);
+    color: #fff;
+  }
+
+  .submit-btn:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
+
+  .reset-btn {
+    display: block;
+    width: 100%;
+    max-width: 720px;
+    margin: 0 auto;
+    padding: 10px;
+    border-radius: var(--radius);
+    border: 1px solid var(--border);
+    background: transparent;
+    font-size: 0.85rem;
+    color: var(--subtext);
+    cursor: pointer;
+    transition: background 0.15s;
+  }
+
+  .reset-btn:hover { background: var(--bg); }
+
+  .result-box {
+    display: none;
+    max-width: 720px;
+    margin: 0 auto 24px;
+    background: var(--surface);
+    border-radius: var(--radius);
+    padding: 24px 32px;
+    border: 1px solid var(--border);
+    box-shadow: 0 2px 8px rgba(0,0,0,0.04);
+  }
+
+  .result-box.show { display: block; }
+
+  .result-box h3 {
+    font-size: 1rem;
+    font-weight: 700;
+    margin-bottom: 6px;
+  }
+
+  .result-score-big {
+    font-size: 3rem;
+    font-weight: 800;
+    line-height: 1;
+    margin-bottom: 4px;
+  }
+
+  .result-note {
+    font-size: 0.82rem;
+    color: var(--subtext);
+    line-height: 1.6;
+  }
+
+  @media (max-width: 560px) {
+    .card { padding: 20px 16px; }
+    .scale-header { grid-template-columns: 1fr repeat(4, 40px); }
+    .q-row { grid-template-columns: 1fr repeat(4, 40px); }
+    .radio-label { width: 30px; height: 30px; font-size: 0.75rem; }
+    .sh-item { font-size: 0.62rem; }
+    .q-text { font-size: 0.83rem; }
+    .score-area, .result-box { padding: 18px 16px; }
+    .submit-btn, .reset-btn { max-width: 100%; }
+  }
+</style>
+</head>
+<body>
+
+<h1>気分尺度アンケート</h1>
+<p class="subtitle">フォームB（ふだんの気持ち）</p>
+
+<div class="score-area">
+  <h3>合計得点（フォーム B）</h3>
+  <div class="score-display">
+    <span class="score-num color-b" id="score-b">0</span>
+    <span class="score-max">/ 80</span>
+  </div>
+  <div class="score-answered" id="answered-b">0 / 20 問回答済み</div>
+  <div class="progress-track">
+    <div class="progress-fill color-b" id="progress-b" style="width:0%"></div>
+  </div>
+</div>
+
+<div class="card" id="panel-b">
+  <div class="card-header">
+    <h2>フォーム B — ふだんの気持ち</h2>
+    <p>記入前に：心の状態を表現する文章が下に記述してあります。その各文章について、ふだん一般的の程度の状態が、該当する番号を○でかこんで下さい。あまり考える必要はありませんが、ふだんの気持ちを最もよく表しているものに反応するよう心掛けて下さい。</p>
+  </div>
+
+  <div class="scale-header">
+    <div class="sh-empty"></div>
+    <div class="sh-item">1<br>決して<br>そう<br>でない</div>
+    <div class="sh-item">2<br>たまに<br>そう<br>である</div>
+    <div class="sh-item">3<br>しばしば<br>そうで<br>ある</div>
+    <div class="sh-item">4<br>いつも<br>そう<br>である</div>
+  </div>
+
+  <div id="questions-b"></div>
+</div>
+
+<button class="submit-btn color-b" id="submit-b" onclick="submitForm('b')" disabled>結果を確定する（フォーム B）</button>
+<button class="reset-btn" onclick="resetForm('b')">リセット</button>
+
+<div class="result-box" id="result-b">
+  <h3>フォーム B 確定スコア</h3>
+  <div class="result-score-big" style="color:var(--primary-b)" id="result-score-b">—</div>
+  <div class="result-note" id="result-note-b"></div>
+</div>
+
+<script>
+const QB = [
+  "たのしい。",
+  "疲れやすい。",
+  "泣きだしたくなる。",
+  "ほかの人と同じくらい幸せであったならと思う。",
+  "すぐに決心がつかず迷いやすい。",
+  "ゆったりした気持である。",
+  "平静・沈着で落ちついている。",
+  "困難なことがかさなると圧倒されてしまう。",
+  "実際に大したことないことが気になってしかたがない。",
+  "幸せである。",
+  "物事を難しく考える傾向がある。",
+  "自信が欠如している。",
+  "安心している。",
+  "やっかいなことは避けて通ろうとする。",
+  "憂うつである。",
+  "満足している。",
+  "ささいなことに思いわずらう。",
+  "ひどくがっかりしたときには気分転換ができない。",
+  "物に動じないほうである。",
+  "身近な問題を考えるとひどく緊張し混乱する。",
+];
+
+const reverseB = new Set([1,3,6,7,10,13,16,19]);
+
+function buildQuestions(list, form) {
+  const container = document.getElementById(`questions-${form}`);
+  list.forEach((text, i) => {
+    const n = i + 1;
+    const row = document.createElement('div');
+    row.className = 'q-row';
+    row.innerHTML = `<div class="q-text"><span class="q-num">${n}.</span>${text}</div>` +
+      [1,2,3,4].map(v => `
+        <div class="radio-cell">
+          <input type="radio" name="${form}_q${n}" id="${form}_q${n}_v${v}" value="${v}" onchange="updateScore('${form}')">
+          <label class="radio-label" for="${form}_q${n}_v${v}">${v}</label>
+        </div>`).join('');
+    container.appendChild(row);
+  });
+}
+
+buildQuestions(QB, 'b');
+
+function updateScore(form) {
+  const total = 20;
+  let score = 0;
+  let answered = 0;
+  for (let i = 1; i <= total; i++) {
+    const sel = document.querySelector(`input[name="${form}_q${i}"]:checked`);
+    if (sel) {
+      const value = parseInt(sel.value, 10);
+      const reversed = reverseB.has(i);
+      score += reversed ? (5 - value) : value;
+      answered++;
+    }
+  }
+  document.getElementById(`score-${form}`).textContent = score;
+  document.getElementById(`answered-${form}`).textContent = `${answered} / ${total} 問回答済み`;
+  document.getElementById(`progress-${form}`).style.width = (answered / total * 100) + '%';
+  document.getElementById(`submit-${form}`).disabled = (answered < total);
+}
+
+function submitForm(form) {
+  const scoreEl = document.getElementById(`score-${form}`);
+  const score = parseInt(scoreEl.textContent, 10);
+  const resultBox = document.getElementById(`result-${form}`);
+  document.getElementById(`result-score-${form}`).textContent = score + ' / 80';
+
+  let note = '';
+  if (score <= 37) note = 'スコアは低め（20〜37点）の範囲です。';
+  else if (score <= 54) note = 'スコアは中程度（38〜54点）の範囲です。';
+  else note = 'スコアは高め（55〜80点）の範囲です。';
+  note += '　※このスコアはあくまで参考値です。';
+
+  document.getElementById(`result-note-${form}`).textContent = note;
+  resultBox.classList.add('show');
+  resultBox.scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
+
+function resetForm(form) {
+  const total = 20;
+  for (let i = 1; i <= total; i++) {
+    const sels = document.querySelectorAll(`input[name="${form}_q${i}"]`);
+    sels.forEach(r => r.checked = false);
+  }
+  updateScore(form);
+  document.getElementById(`result-${form}`).classList.remove('show');
+}
+</script>
+</body>
+</html>
