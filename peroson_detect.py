@@ -181,6 +181,10 @@ STRESS_CONFIG_PATH = os.path.join(OUTPUT_DIR, "stress_config.json")
 # STAI（状態不安STAI-S / 特性不安STAI-T）ラベルとセッション平均特徴の対応データセット。
 # collect モードで1セッション1レコード追記し、tune_stress.py がこれを読んでフィットする。
 STAI_DATASET_PATH = os.path.join(OUTPUT_DIR, "stai_dataset.jsonl")
+# STAI 質問紙の項目文・逆転項目・選択肢アンカーを外部化した編集可能ファイル。
+# survey モードで終了時にこの質問紙を提示し、逆転採点して STAI-S/-T を算出する。
+# 無ければ雛形（プレースホルダ項目文）を自動生成するので、正式な日本語項目文に差し替える。
+STAI_ITEMS_PATH = os.path.join(OUTPUT_DIR, "stai_items.json")
 # 定点観測用の永続データ（人物ごとの顔埋め込み・平常状態統計）とセッション履歴
 PROFILES_JSON_PATH = os.path.join(OUTPUT_DIR, "person_profiles.json")
 SESSION_HISTORY_PATH = os.path.join(OUTPUT_DIR, "session_history.jsonl")
@@ -201,8 +205,11 @@ SFACE_WEIGHT_URL = (
 )
 
 
-# 実行モード: "collect"=終了時にSTAIを入力してデータセットを蓄積 / "run"=調整済みで実運用。
-# stress_config.json の "mode" で切り替える（既定は run＝従来どおり何も聞かない）。
+# 実行モード（stress_config.json の "mode" で切り替える。既定は run＝従来どおり何も聞かない）:
+#   "run"     = 調整済みで実運用。終了時に何も聞かない。
+#   "collect" = 終了時に別途採点済みの STAI 得点(20-80)を手入力してデータセットへ蓄積。
+#   "survey"  = 終了時にアプリ内で STAI 質問紙(20項目)に回答→逆転項目を含め自動採点→
+#               算出した STAI-S/-T をデータセットへ保存（別紙での実施・手入力が不要）。
 RUN_MODE = "run"
 
 
@@ -1510,13 +1517,19 @@ def main():
         except Exception as e:
             print(f"人物プロファイルの保存に失敗しました: {e}")
 
-        # collect モードのみ: STAI（状態不安/特性不安）を入力してデータセットへ追記する。
-        # ここで貯めた (セッション平均z, STAI) のペアを tune_stress.py が学習に使う。
+        # 終了時のSTAIラベル付け。ここで貯めた (セッション平均z, STAI) のペアを
+        # tune_stress.py が学習に使う。モードにより採点済み得点の手入力(collect)か、
+        # アプリ内での質問紙実施＋自動採点(survey)かを切り替える。
         if RUN_MODE == "collect":
             try:
                 collect_stai_labels(session_summaries)
             except Exception as e:
                 print(f"STAIラベルの記録に失敗しました: {e}")
+        elif RUN_MODE == "survey":
+            try:
+                run_stai_survey(session_summaries)
+            except Exception as e:
+                print(f"STAI 問診の実施に失敗しました: {e}")
 
 
 def _prompt_stai(label):
@@ -1576,6 +1589,203 @@ def collect_stai_labels(session_summaries):
         print("十分たまったら `python tune_stress.py --report` で相関を確認できます。")
     else:
         print("\nSTAI ラベルは記録されませんでした。")
+
+
+# ============================================================================
+# STAI 質問紙（survey モード：アプリ内で実施＋自動採点）
+# ============================================================================
+# collect モードが「別紙で実施・採点済みの得点」を手入力させるのに対し、survey モードは
+# 終了時にアプリ内で 20 項目に回答させ、逆転項目を含めて自動採点して STAI-S/-T を算出する。
+# 項目文・逆転項目・選択肢アンカーは stai_items.json（編集可能）に外部化する。
+
+# STAI は 4 件法（各項目 1〜4）。20 項目合計で 20〜80 点になる。
+STAI_SCALE_MIN = 1
+STAI_SCALE_MAX = 4
+STAI_ITEMS_PER_SCALE = 20
+
+
+def _default_stai_items():
+    """stai_items.json の雛形（辞書）を返す。項目文はプレースホルダで、正式な日本語 STAI に
+    差し替えて使う（著作権のある正文はコードに直書きしない）。reverse は 1-based（各尺度20項目内）。
+
+    ※ 逆転項目は STAI のバージョン（原版 / Form Y / 日本語新版など）で異なる。既定は
+       Form Y の値を入れてあるが、使用する正式版に合わせて必ず確認・差し替えること。"""
+    anchors = [
+        "1: 全くあてはまらない",
+        "2: いくらかあてはまる",
+        "3: よくあてはまる",
+        "4: 非常によくあてはまる",
+    ]
+    return {
+        "_note": (
+            "items は各尺度20項目のプレースホルダ。正式な日本語STAIの項目文に差し替えてください。"
+            "reverse は逆転採点する項目番号(1-based, 20項目内)で、使用する版に合わせて確認・修正すること。"
+        ),
+        "state": {
+            "title": "STAI-S 状態不安（今この瞬間の気持ち）",
+            "reverse": [1, 2, 5, 8, 10, 11, 15, 16, 19, 20],
+            "anchors": list(anchors),
+            "items": [f"（状態不安 項目{i} の文をここに）" for i in range(1, STAI_ITEMS_PER_SCALE + 1)],
+        },
+        "trait": {
+            "title": "STAI-T 特性不安（ふだんの気持ち）",
+            "reverse": [1, 6, 7, 10, 13, 16, 19],
+            "anchors": list(anchors),
+            "items": [f"（特性不安 項目{i} の文をここに）" for i in range(1, STAI_ITEMS_PER_SCALE + 1)],
+        },
+    }
+
+
+def _valid_scale_def(scale):
+    """1尺度の定義が採点に使える形か（items が20件、reverse が1-20の範囲）を軽く検証する。"""
+    if not isinstance(scale, dict):
+        return False
+    items = scale.get("items")
+    if not isinstance(items, list) or len(items) != STAI_ITEMS_PER_SCALE:
+        return False
+    reverse = scale.get("reverse", [])
+    if not isinstance(reverse, list):
+        return False
+    return all(isinstance(i, int) and 1 <= i <= STAI_ITEMS_PER_SCALE for i in reverse)
+
+
+def load_stai_items(path=STAI_ITEMS_PATH):
+    """stai_items.json を読み込む。無ければ雛形を書き出して返す（load_stress_config と同じ流儀）。
+    内容が壊れている/項目数が合わない場合は警告して雛形にフォールバックする。"""
+    if not os.path.exists(path):
+        items = _default_stai_items()
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(items, f, ensure_ascii=False, indent=2)
+            print(f"STAI 質問紙の雛形を作成しました: {path}")
+            print("→ 正式な日本語 STAI の項目文・逆転項目に差し替えてから使ってください。")
+        except Exception as e:
+            print(f"STAI 質問紙ファイルの作成に失敗しました（雛形で続行）: {e}")
+        return items
+
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            items = json.load(f)
+    except Exception as e:
+        print(f"STAI 質問紙ファイルの読み込みに失敗しました（雛形で続行）: {e}")
+        return _default_stai_items()
+
+    if not _valid_scale_def(items.get("state")):
+        print("stai_items.json の state 定義が不正（項目数/逆転項目）です。雛形で続行します。")
+        return _default_stai_items()
+    return items
+
+
+def score_stai(answers, reverse_indices):
+    """STAI の採点本体。各回答(1〜4)を、逆転項目は (5 - 回答) に変換して合計する。
+    reverse_indices は 1-based（20項目内）。20項目そろっていれば戻り値は 20〜80。"""
+    reverse = set(int(i) for i in reverse_indices)
+    total = 0
+    for pos, raw in enumerate(answers, start=1):  # pos は 1-based の項目番号
+        val = int(raw)
+        total += (STAI_SCALE_MAX + STAI_SCALE_MIN - val) if pos in reverse else val
+    return total
+
+
+def _prompt_stai_item(item_no, text, anchors):
+    """1 項目を提示して 1〜4 を読む。範囲外/非数値は再入力を促す。空欄/EOF は中断(None)。"""
+    hint = " / ".join(anchors)
+    print(f"\nQ{item_no}. {text}")
+    print(f"    ({hint})")
+    while True:
+        try:
+            raw = input(f"    回答 [{STAI_SCALE_MIN}-{STAI_SCALE_MAX}, 空欄=中断]: ").strip()
+        except EOFError:
+            return None
+        if not raw:
+            return None
+        try:
+            val = int(raw)
+        except ValueError:
+            print("    数値で入力してください。")
+            continue
+        if STAI_SCALE_MIN <= val <= STAI_SCALE_MAX:
+            return val
+        print(f"    {STAI_SCALE_MIN}〜{STAI_SCALE_MAX} で入力してください。")
+
+
+def administer_stai(scale_key, items_cfg):
+    """指定尺度（"state"/"trait"）の20項目を順に提示・回答収集し、逆転採点した合計点を返す。
+    途中で中断（空欄/EOF）された場合は None を返す。"""
+    scale = items_cfg.get(scale_key)
+    if not _valid_scale_def(scale):
+        print(f"STAI {scale_key} の定義が不正なため実施できません。")
+        return None
+    title = scale.get("title", scale_key)
+    anchors = scale.get("anchors", [])
+    print(f"\n----- {title} -----")
+    print(f"各項目に {STAI_SCALE_MIN}〜{STAI_SCALE_MAX} で答えてください（空欄で中断）。")
+    answers = []
+    for i, text in enumerate(scale["items"], start=1):
+        val = _prompt_stai_item(i, text, anchors)
+        if val is None:
+            print("  → 中断しました。")
+            return None
+        answers.append(val)
+    total = score_stai(answers, scale.get("reverse", []))
+    print(f"  → {title} 合計 = {total} 点（20-80）")
+    return total
+
+
+def _prompt_scale_choice():
+    """このセッションで実施する尺度を選ぶ。"s"=STAI-S のみ / "st"=S+T。既定は "s"。"""
+    print("\n実施する尺度を選んでください:")
+    print("  [1] STAI-S 状態不安のみ（20項目）")
+    print("  [2] STAI-S + STAI-T（40項目）")
+    try:
+        raw = input("選択 [1/2, 既定=1]: ").strip()
+    except EOFError:
+        return "s"
+    return "st" if raw == "2" else "s"
+
+
+def run_stai_survey(session_summaries):
+    """survey モードの本体。終了時にアプリ内で STAI 質問紙を実施し、逆転採点して算出した
+    STAI-S/-T を、collect と同一 schema で stai_dataset.jsonl へ人物ごとに追記する。"""
+    if not session_summaries:
+        print("このセッションでは評価サンプルが無いため、STAIの記録は行いません。")
+        return
+
+    items = load_stai_items()
+    scale = _prompt_scale_choice()
+
+    print("\n=== STAI 問診（survey モード）===")
+    print("各人物について質問紙に回答してください（最初の項目を空欄にするとその人物をスキップ）。")
+    saved = 0
+    now = datetime.now().isoformat(timespec="seconds")
+    for pid, s in session_summaries.items():
+        n = s["samples"]
+        if n <= 0:
+            continue
+        print(f"\n[人物 ID={pid}] このセッションの平均ストレス {s['sum'] / n:.1f} / 100")
+        stai_s = administer_stai("state", items)
+        if stai_s is None:
+            print("  → この人物をスキップしました。")
+            continue
+        stai_t = administer_stai("trait", items) if scale == "st" else None
+        rec = {
+            "date": now,
+            "person_id": int(pid) if pid is not None else None,
+            "stai_state": float(stai_s),
+            "stai_trait": float(stai_t) if stai_t is not None else None,
+            "duration_sec": round(max(0.0, s["last_t"] - s["first_t"]), 1),
+            "samples": n,
+            "mean_stress": round(s["sum"] / n, 2),
+            "z": {f: round(s["z_sum"][f] / n, 4) for f in _FEATURES},
+        }
+        with open(STAI_DATASET_PATH, "a", encoding="utf-8") as f:
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        saved += 1
+    if saved:
+        print(f"\nSTAI 得点を自動採点して {saved} 件記録しました: {STAI_DATASET_PATH}")
+        print("十分たまったら `python tune_stress.py --report` で相関を確認できます。")
+    else:
+        print("\nSTAI 得点は記録されませんでした。")
 
 
 if __name__ == "__main__":
