@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+person_profiles.json
+session_history.jsonl
+stai_dataset.jsonl
+stress_log.csv
+stress_graph.png
+stress_config.json
+face_landmarker.task
