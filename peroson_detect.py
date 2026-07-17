@@ -1519,8 +1519,8 @@ def main():
                 print(f"STAIラベルの記録に失敗しました: {e}")
 
 
-def _prompt_stai(label):
-    """STAI 得点(20-80)をコンソールから読む。空欄/範囲外/非数値は None を返す。"""
+def _prompt_stai(label, min_val=20.0, max_val=80.0):
+    """STAI 得点などをコンソールから読む。空欄/範囲外/非数値は None を返す。"""
     try:
         raw = input(label).strip()
     except EOFError:
@@ -1532,8 +1532,8 @@ def _prompt_stai(label):
     except ValueError:
         print("  数値ではないためスキップしました。")
         return None
-    if not (20.0 <= val <= 80.0):
-        print("  STAI は 20〜80 の範囲です。範囲外のためスキップしました。")
+    if not (min_val <= val <= max_val):
+        print(f"  入力値は {min_val}〜{max_val} の範囲である必要があります。範囲外のためスキップしました。")
         return None
     return val
 
@@ -1553,11 +1553,14 @@ def collect_stai_labels(session_summaries):
         if n <= 0:
             continue
         print(f"\n[人物 ID={pid}] このセッションの平均ストレス {s['sum'] / n:.1f} / 100")
-        stai_s = _prompt_stai("  STAI-S 状態不安 (20-80, 空欄=この人物をスキップ): ")
-        if stai_s is None:
+        # 状態不安は短縮版(STAI-S6: 6-24)で入力させ、STAI-T(20-80)を基準としたスケールに正規化(20/6倍)する
+        stai_s6 = _prompt_stai("  STAI-S6 状態不安 (短縮版 6-24, 空欄=この人物をスキップ): ", 6.0, 24.0)
+        if stai_s6 is None:
             print("  → スキップしました。")
             continue
-        stai_t = _prompt_stai("  STAI-T 特性不安 (20-80, 空欄=可): ")
+        stai_s = stai_s6 * (20.0 / 6.0)  # 20〜80のスケールに正規化
+        
+        stai_t = _prompt_stai("  STAI-T 特性不安 (従来版 20-80, 空欄=可): ", 20.0, 80.0)
         rec = {
             "date": now,
             "person_id": int(pid) if pid is not None else None,
