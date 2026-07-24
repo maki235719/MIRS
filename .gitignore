@@ -7,3 +7,6 @@ stress_log.csv
 stress_graph.png
 stress_config.json
 face_landmarker.task
+coral/models/*.tflite
+coral/models/*.onnx
+coral/models/*.npy

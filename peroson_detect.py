@@ -29,6 +29,7 @@
 import csv
 import json
 import os
+import platform
 import time
 import urllib.request
 from collections import deque
@@ -205,6 +206,13 @@ SFACE_WEIGHT_URL = (
 )
 
 
+# --- Coral USB Accelerator (Edge TPU) 対応（任意）---
+# HSEmotion の感情分類を Edge TPU にオフロードする。無効時/未接続時は自動でCPU(onnxruntime)へ
+# フォールバックするため、この機能は無くても本体は従来どおり動く。
+CORAL_ENABLED = False
+CORAL_MODEL_PATH = os.path.join(OUTPUT_DIR, "coral", "models", "emotion_enet_b2_8_edgetpu.tflite")
+CORAL_DEVICE = ""  # 複数Coral接続時の識別子（例 ":0"）。空なら既定デバイス。
+
 # 実行モード（stress_config.json の "mode" で切り替える。既定は run＝従来どおり何も聞かない）:
 #   "run"     = 調整済みで実運用。終了時に何も聞かない。
 #   "collect" = 終了時に別途採点済みの STAI 得点(20-80)を手入力してデータセットへ蓄積。
@@ -232,6 +240,11 @@ def _default_stress_config():
             "mouth": MOUTH_STD_FLOOR,
             "eye": EYE_STD_FLOOR,
         },
+        "coral": {
+            "enabled": CORAL_ENABLED,
+            "model_path": os.path.relpath(CORAL_MODEL_PATH, OUTPUT_DIR),
+            "device": CORAL_DEVICE,
+        },
     }
 
 
@@ -242,6 +255,7 @@ def load_stress_config(path=STRESS_CONFIG_PATH):
     global STRESS_BASE_LEVEL, STRESS_Z_GAIN, RUN_MODE
     global EMO_STD_FLOOR, BROW_STD_FLOOR, BLINK_STD_FLOOR
     global HEAD_STD_FLOOR, MOUTH_STD_FLOOR, EYE_STD_FLOOR
+    global CORAL_ENABLED, CORAL_MODEL_PATH, CORAL_DEVICE
 
     if not os.path.exists(path):
         try:
@@ -285,11 +299,21 @@ def load_stress_config(path=STRESS_CONFIG_PATH):
     if "eye" in floors:
         EYE_STD_FLOOR = float(floors["eye"])
 
+    coral = cfg.get("coral") or {}
+    if "enabled" in coral:
+        CORAL_ENABLED = bool(coral["enabled"])
+    if "model_path" in coral:
+        p = str(coral["model_path"])
+        CORAL_MODEL_PATH = p if os.path.isabs(p) else os.path.normpath(os.path.join(OUTPUT_DIR, p))
+    if "device" in coral:
+        CORAL_DEVICE = str(coral["device"])
+
     # 分散下限を参照するテーブル（後段で定義済み）も同期しておく。
     _sync_feature_std_floors()
     print(
         f"設定を読み込みました（mode={RUN_MODE}）: "
-        f"weights={STRESS_COMPONENT_WEIGHTS}, base={STRESS_BASE_LEVEL}, gain={STRESS_Z_GAIN}"
+        f"weights={STRESS_COMPONENT_WEIGHTS}, base={STRESS_BASE_LEVEL}, gain={STRESS_Z_GAIN}, "
+        f"coral={'ON' if CORAL_ENABLED else 'OFF'}"
     )
 
 
@@ -343,6 +367,135 @@ def create_face_landmarker():
         min_tracking_confidence=0.5,
     )
     return vision.FaceLandmarker.create_from_options(options)
+
+
+# ============================================================================
+# 感情認識（Coral USB Accelerator / Edge TPU, 任意）
+# ============================================================================
+# HSEmotion(onnxruntime, CPU)の代わりにEdge TPUへオフロードする。事前に
+# coral/convert_emotion_model.py で変換した .tflite が必要（README参照）。
+# 未接続/未導入/変換モデル未配置なら try_create_coral_emotion_recognizer が
+# Noneを返し、呼び出し側でCPU(HSEmotionRecognizer)にフォールバックする。
+
+def _hsemotion_idx_to_class(model_name):
+    """hsemotion_onnx.HSEmotionRecognizer と同じクラス数/ラベル対応表を返す
+    （Edge TPU用に変換したモデルも同じ学習済み重みなので対応表は共通）。"""
+    if "_7" in model_name:
+        return {0: "Anger", 1: "Disgust", 2: "Fear", 3: "Happiness", 4: "Neutral",
+                5: "Sadness", 6: "Surprise"}
+    return {0: "Anger", 1: "Contempt", 2: "Disgust", 3: "Fear", 4: "Happiness",
+            5: "Neutral", 6: "Sadness", 7: "Surprise"}
+
+
+def _hsemotion_img_size(model_name):
+    """hsemotion_onnx.HSEmotionRecognizer と同じ入力解像度を返す。"""
+    return 224 if "_b0_" in model_name else 260
+
+
+def _edgetpu_delegate_library():
+    """プラットフォームごとのEdge TPUデリゲート共有ライブラリ名を返す。"""
+    system = platform.system()
+    if system == "Windows":
+        return "edgetpu.dll"
+    if system == "Darwin":
+        return "libedgetpu.1.dylib"
+    return "libedgetpu.so.1"
+
+
+class CoralEmotionRecognizer:
+    """Edge TPU上でHSEmotion相当の感情分類を行う。HSEmotionRecognizerと同じ
+    インターフェース（idx_to_class, predict_emotions）を持つため、呼び出し側の
+    コードは変更不要。量子化(int8)モデル前提で、入出力を手動でscale/zero_point変換する。"""
+
+    def __init__(self, model_path, device, model_name):
+        self.idx_to_class = _hsemotion_idx_to_class(model_name)
+        self.img_size = _hsemotion_img_size(model_name)
+        self.is_mtl = "_mtl" in model_name
+
+        Interpreter, load_delegate = self._import_tflite()
+        options = {"device": device} if device else {}
+        delegate = load_delegate(_edgetpu_delegate_library(), options)
+        self.interpreter = Interpreter(model_path=model_path, experimental_delegates=[delegate])
+        self.interpreter.allocate_tensors()
+        self.input_detail = self.interpreter.get_input_details()[0]
+        self.output_detail = self.interpreter.get_output_details()[0]
+
+    @staticmethod
+    def _import_tflite():
+        """tflite Interpreter実装を優先順(tensorflow→tflite_runtime→ai_edge_litert)で探す。
+        pycoral/tflite_runtime公式wheelはPython3.9までしか出ていないため、最新環境では
+        素のtensorflowパッケージ（pip install tensorflowで入る）が本命。"""
+        try:
+            from tensorflow.lite import Interpreter
+            from tensorflow.lite.experimental import load_delegate
+            return Interpreter, load_delegate
+        except Exception:
+            pass
+        try:
+            from tflite_runtime.interpreter import Interpreter, load_delegate
+            return Interpreter, load_delegate
+        except Exception:
+            pass
+        from ai_edge_litert.interpreter import Interpreter, load_delegate
+        return Interpreter, load_delegate
+
+    def _preprocess(self, img):
+        """hsemotion_onnx.preprocess と同じresize/ImageNet正規化。tfliteはNHWC入力の
+        ため、onnx版と異なりNCHW転置は行わない。"""
+        x = cv2.resize(img, (self.img_size, self.img_size)) / 255
+        x[..., 0] = (x[..., 0] - 0.485) / 0.229
+        x[..., 1] = (x[..., 1] - 0.456) / 0.224
+        x[..., 2] = (x[..., 2] - 0.406) / 0.225
+        return x.astype("float32")[np.newaxis, ...]
+
+    def _quantize_input(self, x):
+        scale, zero_point = self.input_detail["quantization"]
+        dtype = self.input_detail["dtype"]
+        if not scale or dtype == np.float32:
+            return x.astype(dtype)
+        q = np.round(x / scale + zero_point)
+        return np.clip(q, np.iinfo(dtype).min, np.iinfo(dtype).max).astype(dtype)
+
+    def _dequantize_output(self, y):
+        scale, zero_point = self.output_detail["quantization"]
+        if not scale:
+            return y.astype(np.float32)
+        return (y.astype(np.float32) - zero_point) * scale
+
+    def predict_emotions(self, face_img, logits=True):
+        x = self._quantize_input(self._preprocess(face_img))
+        self.interpreter.set_tensor(self.input_detail["index"], x)
+        self.interpreter.invoke()
+        raw = self.interpreter.get_tensor(self.output_detail["index"])[0]
+        scores = self._dequantize_output(raw)
+
+        core = scores[:-2] if self.is_mtl else scores
+        pred = int(np.argmax(core))
+        if not logits:
+            e_x = np.exp(core - np.max(core))
+            e_x = e_x / e_x.sum()
+            scores = scores.copy()
+            if self.is_mtl:
+                scores[:-2] = e_x
+            else:
+                scores = e_x
+        return self.idx_to_class[pred], scores
+
+
+def try_create_coral_emotion_recognizer(model_path, device, model_name):
+    """Coral(Edge TPU)での感情分類器の生成を試みる。ライブラリ未導入・モデル未配置・
+    デバイス未接続などいかなる理由でも例外を投げず、失敗理由を1行printしてNoneを返す。
+    呼び出し側はNoneならCPU(HSEmotionRecognizer)へ一律フォールバックできる。"""
+    if not os.path.exists(model_path):
+        print(f"Coral用モデルが見つかりません: {model_path}")
+        return None
+    try:
+        recognizer = CoralEmotionRecognizer(model_path, device, model_name)
+        print(f"Coral TPUで感情推論します（モデル: {model_path}）。")
+        return recognizer
+    except Exception as e:
+        print(f"Coral TPUの初期化に失敗したため、感情推論はCPUにフォールバックします: {e}")
+        return None
 
 
 # ============================================================================
@@ -1097,7 +1250,11 @@ def main():
     ensure_face_landmarker_model()
 
     print("感情モデルを読み込んでいます（初回はダウンロードが走ります）...")
-    fer = HSEmotionRecognizer(model_name=HSEMOTION_MODEL)
+    fer = None
+    if CORAL_ENABLED:
+        fer = try_create_coral_emotion_recognizer(CORAL_MODEL_PATH, CORAL_DEVICE, HSEMOTION_MODEL)
+    if fer is None:
+        fer = HSEmotionRecognizer(model_name=HSEMOTION_MODEL)
     landmarker = create_face_landmarker()
 
     # 顔識別器（同一人物判定）。既定は深層埋め込み(SFace/DeepFace)で別人を確実に分離する。

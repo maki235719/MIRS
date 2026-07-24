@@ -154,6 +154,48 @@ python tune_stress.py --apply
 
 ---
 
+## ⚡ Coral USB Accelerator (Edge TPU) 対応（任意）
+
+感情分類（HSEmotion）を USB接続の Coral Edge TPU にオフロードできます。Coral未接続/未設定の環境では
+自動的に従来どおりCPU(onnxruntime)で動作するため、無効化していれば挙動は一切変わりません。
+
+### 有効化手順
+1. **Coral Edge TPU runtime（USBドライバ）** を導入する（[coral.ai/software](https://coral.ai/software/) の
+   "Edge TPU runtime" をOS別にインストール）。
+2. **推論用ライブラリ**: `pip install tensorflow`（`tensorflow.lite.Interpreter` を使用。Python 3.9以下の
+   環境なら軽量な `tflite-runtime`/`pycoral` でも可）。
+3. **Edge TPU用モデルの変換**（Linux/WSL上で一度だけ）:
+   ```bash
+   cd face_detect/coral
+   pip install onnx onnx2tf onnxruntime tensorflow numpy opencv-python-headless
+   # Coral公式リポジトリから edgetpu_compiler を導入（Linux x86-64専用）
+   python convert_emotion_model.py --model-name enet_b2_8 --calib-dir ./calib_faces
+   ```
+   `--calib-dir` には顔クロップ画像を20〜100枚程度置くことを推奨します（無いとランダム画像で量子化され精度が落ちます）。
+   生成された `models/enet_b2_8_edgetpu.tflite` を Windows側の同じ場所（`face_detect/coral/models/`）にコピーします。
+4. `stress_config.json` を編集して有効化します。
+   ```json
+   {
+     "coral": {
+       "enabled": true,
+       "model_path": "coral/models/enet_b2_8_edgetpu.tflite",
+       "device": ""
+     }
+   }
+   ```
+   `device` は Coral を複数接続する場合のみ `":0"` 等を指定します（通常は空文字でOK）。
+
+### 注意点
+* `edgetpu_compiler` は Linux(x86-64) 専用です。変換はWSL/Docker/Linux上で行い、本体(`peroson_detect.py`)は
+  Windows上でそのまま変換済み `.tflite` を読み込むだけです。
+* Coral公式には既製の「感情分類」Edge TPUモデルが存在しないため、上記スクリプトで自前変換する必要があります。
+  int8量子化により、CPU(float32)版に比べて精度がわずかに劣化する場合があります。導入後は `stress_log.csv` を
+  CPU版と見比べることを推奨します。
+* Coral未接続・モデル未配置・ライブラリ未導入など、いかなる理由でも起動時に自動でCPUにフォールバックし、
+  コンソールにその旨が表示されます（エラー終了はしません）。
+
+---
+
 ## 🧹 データのリセット方法
 蓄積データや学習した人物のプロファイルをリセットしたい場合は、以下のコマンドを使用します。
 
