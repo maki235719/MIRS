@@ -1322,6 +1322,8 @@ def main():
     last_eye = 0.0                 # 瞼の緊張
     last_face_id = None            # 直近に割り当てた人物タグ（連続性を持つID）
     last_face_sim = 0.0            # 直近の照合類似度（デバッグ表示用）
+    prev_frame_time = None         # FPS計測用の直前フレーム時刻
+    fps_smoothed = 0.0             # EMA平滑化したFPS表示値
 
     blink_counter = BlinkCounter()
     head_tracker = HeadMotionTracker()
@@ -1352,6 +1354,10 @@ def main():
             frame_count += 1
             now = time.time()
             elapsed = now - session_start
+
+            if prev_frame_time is not None and now > prev_frame_time:
+                fps_smoothed = 0.1 * (1.0 / (now - prev_frame_time)) + 0.9 * fps_smoothed
+            prev_frame_time = now
 
             # --- FaceLandmarker は毎フレーム実行（VIDEOモードは単調増加のtimestampが必要） ---
             rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -1644,6 +1650,11 @@ def main():
                     frame, "No face detected", (20, frame_h - 20),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2,
                 )
+
+            cv2.putText(
+                frame, f"FPS: {fps_smoothed:.1f}", (frame_w - 130, 30),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2,
+            )
 
             cv2.imshow("Stress Evaluation (press q to quit)", frame)
             if cv2.waitKey(1) & 0xFF == ord("q"):
